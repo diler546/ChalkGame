@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+  />
+  <meta name="theme-color" content="#05070d" />
+  <title>МЕЛОК: Ночной Вернисаж</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="stage">
+    <canvas
+      id="game"
+      width="1280"
+      height="720"
+      aria-label="Игровое поле: ночная галерея, художник с мелом"
+    ></canvas>
+
+    <button id="btn-pause" class="pill" type="button">Пауза</button>
+
+    <div id="overlay-ui" data-screen="menu">
+      <!-- ГЛАВНОЕ МЕНЮ -->
+      <section class="screen screen-menu" data-screen-panel="menu">
+        <div class="brand">
+          <span class="brand-main">МЕЛОК</span>
+          <span class="brand-sub">Ночной Вернисаж</span>
+        </div>
+        <p class="tagline">
+          Восемь залов, восемь полотен и три печати. У тебя только мел и краска.
+        </p>
+
+        <div class="diff-block">
+          <span class="diff-caption">Сложность</span>
+          <div class="diff-row">
+            <button class="pill" type="button" data-diff="easy">Лёгкий</button>
+            <button class="pill primary" type="button" data-diff="medium">Средний</button>
+            <button class="pill" type="button" data-diff="hard">Сложный</button>
+          </div>
+          <p class="diff-note" data-diff-note>Краски мало. Планируй каждый мост.</p>
+        </div>
+
+        <div class="actions">
+          <button class="pill primary big" type="button" data-action="start">Играть</button>
+          <button class="pill ghost" type="button" data-sound>Звук: вкл</button>
+        </div>
+
+        <p class="controls">
+          ← → / A D — движение · Space / W / ↑ — прыжок · P / Esc — пауза
+        </p>
+      </section>
+
+      <!-- ПРОЛОГ -->
+      <section class="screen screen-cutscene" data-screen-panel="intro">
+        <span class="cutscene-kicker">ПРОЛОГ</span>
+        <h2>Ночь перед вернисажем</h2>
+        <div class="cs-lines" data-cs="intro"></div>
+        <div class="actions">
+          <button class="pill primary" type="button" data-action="continue">Продолжить</button>
+          <button class="pill ghost" type="button" data-action="skip">Пропустить</button>
+        </div>
+      </section>
+
+      <!-- ПАУЗА -->
+      <section class="screen screen-panel" data-screen-panel="paused">
+        <span class="panel-kicker">ПАУЗА</span>
+        <h2>Тишина в галерее…</h2>
+        <p class="panel-sub">Можно сменить сложность перед новым забегом.</p>
+
+        <div class="diff-block">
+          <span class="diff-caption">Сложность следующего забега</span>
+          <div class="diff-row">
+            <button class="pill" type="button" data-diff="easy">Лёгкий</button>
+            <button class="pill primary" type="button" data-diff="medium">Средний</button>
+            <button class="pill" type="button" data-diff="hard">Сложный</button>
+          </div>
+          <p class="diff-note">Применится после кнопки «Заново».</p>
+        </div>
+
+        <div class="actions">
+          <button class="pill primary" type="button" data-action="resume">Продолжить</button>
+          <button class="pill" type="button" data-action="restart">Заново</button>
+          <button class="pill ghost" type="button" data-action="menu">В меню</button>
+          <button class="pill ghost" type="button" data-sound>Звук: вкл</button>
+        </div>
+        <p class="controls">P / Esc / З — продолжить</p>
+      </section>
+
+      <!-- ПОРАЖЕНИЕ -->
+      <section class="screen screen-panel" data-screen-panel="lost">
+        <span class="panel-kicker">ФИНАЛ</span>
+        <h2>Ночь вышла неладно…</h2>
+        <p class="panel-sub">Галерея снова погрузилась в тишину. Но мел ещё остался.</p>
+
+        <div class="stats" data-stats>
+          <div><span>Счёт</span><b data-stat="score">0</b></div>
+          <div><span>Рекорд</span><b data-stat="best">0</b></div>
+          <div><span>Картины</span><b data-stat="pictures">0 / 8</b></div>
+          <div><span>Печати</span><b data-stat="puzzles">0 / 3</b></div>
+          <div><span>Время</span><b data-stat="time">0:00</b></div>
+          <div><span>Сложность</span><b data-stat="difficulty">Средний</b></div>
+        </div>
+
+        <div class="diff-block">
+          <span class="diff-caption">Сложность следующего забега</span>
+          <div class="diff-row">
+            <button class="pill" type="button" data-diff="easy">Лёгкий</button>
+            <button class="pill primary" type="button" data-diff="medium">Средний</button>
+            <button class="pill" type="button" data-diff="hard">Сложный</button>
+          </div>
+          <p class="diff-note">Применится после кнопки «Заново».</p>
+        </div>
+
+        <div class="actions">
+          <button class="pill primary" type="button" data-action="restart">Заново</button>
+          <button class="pill ghost" type="button" data-action="menu">В меню</button>
+          <button class="pill ghost" type="button" data-sound>Звук: вкл</button>
+        </div>
+      </section>
+
+      <!-- ЭПИЛОГ -->
+      <section class="screen screen-cutscene" data-screen-panel="outro">
+        <span class="cutscene-kicker">ЭПИЛОГ</span>
+        <h2>Свет вернулся на стены</h2>
+        <div class="cs-lines" data-cs="outro"></div>
+        <div class="actions">
+          <button class="pill primary" type="button" data-action="continue">К титрам</button>
+          <button class="pill ghost" type="button" data-action="skip">Пропустить</button>
+        </div>
+      </section>
+
+      <!-- ПОБЕДА -->
+      <section class="screen screen-panel screen-won" data-screen-panel="won">
+        <span class="panel-kicker">ТИТРЫ</span>
+        <h2>Вернисаж спасён!</h2>
+        <p class="panel-sub">Все восемь полотен вернулись, три печати сняты, дверь открыта.</p>
+
+        <div class="stats" data-stats>
+          <div><span>Счёт</span><b data-stat="score">0</b></div>
+          <div><span>Рекорд</span><b data-stat="best">0</b></div>
+          <div><span>Картины</span><b data-stat="pictures">0 / 8</b></div>
+          <div><span>Печати</span><b data-stat="puzzles">0 / 3</b></div>
+          <div><span>Время</span><b data-stat="time">0:00</b></div>
+          <div><span>Краска</span><b data-stat="paint">0 / 0</b></div>
+          <div><span>Сложность</span><b data-stat="difficulty">Средний</b></div>
+          <div><span>Падения</span><b data-stat="falls">0</b></div>
+        </div>
+
+        <p class="credits">
+          МЕЛОК: Ночной Вернисаж<br />
+          Canvas 2D · Web Audio · ES-модули<br />
+          Без библиотек и сборщиков<br />
+          <span>Спасибо, что вернули свет на стены.</span>
+        </p>
+
+        <div class="actions">
+          <button class="pill primary" type="button" data-action="restart">Ещё забег</button>
+          <button class="pill ghost" type="button" data-action="menu">В меню</button>
+          <button class="pill ghost" type="button" data-sound>Звук: вкл</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="mobile">
+      <div class="mobile-side">
+        <button id="m-left" class="touch" type="button" aria-label="Влево">◀</button>
+        <button id="m-right" class="touch" type="button" aria-label="Вправо">▶</button>
+      </div>
+      <div class="mobile-side">
+        <button id="m-jump" class="touch" type="button" aria-label="Прыжок">⤒</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
