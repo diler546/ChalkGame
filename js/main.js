@@ -2,7 +2,6 @@ import { Game, DIFFICULTIES } from './Game.js';
 
 const canvas = document.getElementById('game');
 const game = new Game(canvas);
-window.__game = game; // временный отладочный хук
 
 const overlay = document.getElementById('overlay-ui');
 const btnPause = document.getElementById('btn-pause');
@@ -34,11 +33,13 @@ function syncDifficulty() {
   }
 
   const cfg = DIFFICULTIES[game.selectedDifficulty] || DIFFICULTIES.medium;
+  const livesWord =
+    cfg.lives === 1 ? 'жизнь' : cfg.lives < 5 ? 'жизни' : 'жизней';
   const note = document.querySelector('.screen-menu [data-diff-note]');
   if (note) {
     note.textContent =
       `${cfg.label}: ${cfg.paint} краски · +${cfg.regen}/с · ` +
-      `${cfg.lives} жизни · бонус +${cfg.bonus}`;
+      `${cfg.lives} ${livesWord} · бонус +${cfg.bonus}`;
   }
 }
 

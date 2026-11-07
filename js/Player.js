@@ -35,11 +35,13 @@ export class Player {
     this.facing = 1;
     this.justJumped = false;
     this.justLanded = false;
+    this.justBonked = false;
   }
 
   update(dt, solids, keys) {
     this.justJumped = false;
     this.justLanded = false;
+    this.justBonked = false;
 
     // Горизонтальное управление.
     let dir = 0;
@@ -81,6 +83,15 @@ export class Player {
     this.onGround = false;
     this.y += this.vy * dt;
     this._resolveY(oldY, solids);
+
+    // Страховочная верхняя граница мира: если потолок где-то забыли,
+    // игрок всё равно получает удар головой и падает вниз.
+    if (this.y < 40) {
+      this.y = 40;
+      this.vy = 200;
+      this.onGround = false;
+      this.justBonked = true;
+    }
 
     if (this.onGround && !wasGround) this.justLanded = true;
   }
@@ -160,6 +171,7 @@ export class Player {
     if (ceilingY !== -Infinity) {
       this.y = ceilingY;
       this.vy = 0;
+      this.justBonked = true;
       return;
     }
 

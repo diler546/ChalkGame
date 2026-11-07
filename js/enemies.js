@@ -1,14 +1,16 @@
-// Враги четырёх типов.
+// Враги шести типов.
 //
-//   patrol  — ходит по площадке и разворачивается у края;
-//   jumper  — прыгает на месте;
-//   flyer   — летает по синусоиде;
-//   shooter — стоит на точке и стреляет снарядами.
+//   patrol   — ходит по площадке и разворачивается у края;
+//   jumper   — прыгает на месте;
+//   flyer    — летает по синусоиде;
+//   shooter  — стоит на точке и стреляет снарядами;
+//   guard    — сторож с фонарём: конус света опасен, спина — нет;
+//   pendulum — прыгун на цепи: качается и бьёт тяжёлым шаром.
 //
 // Снаряды стрелков останавливаются меловыми клетками: игрок может
 // нарисовать перед собой стену и полностью закрыться от выстрелов.
 //
-// Любой контакт/снаряд отнимает одну жизнь; после удара у игрока
+// Любой контакт/снаряд/конус отнимает одну жизнь; после удара у игрока
 // секунда неуязвимости. Сами враги не исчезают.
 
 import { ENEMIES, WORLD } from './level.js';
@@ -56,6 +58,28 @@ function makeEnemy(cfg) {
       r: 14,
       t: (cfg.baseX % 10) * 0.1,
       color: '#4a1f28',
+    };
+  }
+  if (cfg.type === 'guard') {
+    return {
+      ...cfg,
+      w: 24,
+      h: 40,
+      dir: cfg.dir || -1,
+      flipTimer: cfg.flip || 2,
+      coneLength: cfg.coneLength || 190,
+      coneHalf: cfg.coneHalf || 0.17,
+      color: '#3a2430',
+    };
+  }
+  if (cfg.type === 'pendulum') {
+    return {
+      ...cfg,
+      t: 0,
+      bobX: cfg.anchorX,
+      bobY: cfg.anchorY + cfg.length,
+      bobR: 16,
+      color: '#2c3340',
     };
   }
   return {
@@ -125,6 +149,20 @@ export class EnemyManager {
         e.y = e.baseY + Math.sin(e.t * 1.15 + 0.6) * e.ampY;
       } else if (e.type === 'shooter') {
         this._updateShooter(e, dt, player);
+      } else if (e.type === 'guard') {
+        e.flipTimer -= dt;
+        if (e.flipTimer <= 0) {
+          e.dir *= -1;
+          e.flipTimer = e.flip || 2;
+        }
+      } else if (e.type === 'pendulum') {
+        e.t += dt;
+        const period = 3;
+        const amp = Math.PI / 4; // полный размах 90°
+        const angle =
+          Math.sin(((e.t + (e.phase || 0)) / period) * Math.PI * 2) * amp;
+        e.bobX = e.anchorX + Math.sin(angle) * e.length;
+        e.bobY = e.anchorY + Math.cos(angle) * e.length;
       }
     }
 
@@ -261,11 +299,47 @@ export class EnemyManager {
     for (const e of this.enemies) {
       if (e.type === 'flyer') {
         out.push({ type: 'circle', cx: e.x, cy: e.y, r: e.r, ref: e });
+      } else if (e.type === 'pendulum') {
+        out.push({
+          type: 'circle',
+          cx: e.bobX,
+          cy: e.bobY,
+          r: e.bobR,
+          ref: e,
+        });
       } else {
         out.push(rect(e.x, e.y, e.w, e.h));
       }
     }
     return out;
+  }
+
+  // Конус фонаря сторожа: попадание только спереди.
+  _guardSees(e, player) {
+    const gcx = e.x + e.w / 2;
+    const pcx = player.x + player.w / 2;
+
+    // Спина сторожа безопасна: всё, что позади, конус не освещает.
+    if ((pcx - gcx) * e.dir < 0) return false;
+
+    const eyeX = gcx + e.dir * 9;
+    const eyeY = e.y + 13;
+
+    // Ближайшая точка тела игрока к фонарю — так конус ловит и вплотную.
+    const nx = Math.max(player.x, Math.min(eyeX, player.x + player.w));
+    const ny = Math.max(player.y, Math.min(eyeY, player.y + player.h));
+    const dx = nx - eyeX;
+    const dy = ny - eyeY;
+    const dist = Math.hypot(dx, dy);
+    if (dist > e.coneLength) return false;
+    if (dist < 1) return true;
+
+    const facing = e.dir > 0 ? 0 : Math.PI;
+    const angle = Math.atan2(dy, dx);
+    const diff = Math.abs(
+      ((angle - facing + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+    );
+    return diff <= e.coneHalf;
   }
 
   // Возвращает врага, в которого попал игрок, или null.
@@ -275,6 +349,14 @@ export class EnemyManager {
         const dx = player.x + player.w / 2 - e.x;
         const dy = player.y + player.h / 2 - e.y;
         if (Math.hypot(dx, dy) < Math.max(player.w, player.h) / 2 + e.r - 2) {
+          return e;
+        }
+      } else if (e.type === 'guard') {
+        if (this._guardSees(e, player)) return e;
+      } else if (e.type === 'pendulum') {
+        const dx = player.x + player.w / 2 - e.bobX;
+        const dy = player.y + player.h / 2 - e.bobY;
+        if (Math.hypot(dx, dy) < Math.max(player.w, player.h) / 2 + e.bobR - 2) {
           return e;
         }
       } else if (rectsOverlap(player, e)) {
@@ -322,6 +404,119 @@ export class EnemyManager {
         ctx.stroke();
         ctx.fillStyle = '#d8b75b';
         ctx.fillRect(e.x - 2, e.y - 1, 4, 3);
+      } else if (e.type === 'guard') {
+        const cx = e.x + e.w / 2;
+        const eyeX = cx + e.dir * 9;
+        const eyeY = e.y + 13;
+        const facing = e.dir > 0 ? 0 : Math.PI;
+
+        // Конус фонаря: спереди опасно, со спины — нет.
+        ctx.save();
+        ctx.fillStyle = 'rgba(242, 208, 107, 0.10)';
+        ctx.beginPath();
+        ctx.moveTo(eyeX, eyeY);
+        ctx.arc(
+          eyeX,
+          eyeY,
+          e.coneLength,
+          facing - e.coneHalf,
+          facing + e.coneHalf
+        );
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(242, 208, 107, 0.22)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+
+        // Пальто, плечи, шляпа.
+        ctx.fillStyle = e.color;
+        ctx.fillRect(e.x + 2, e.y + 11, e.w - 4, e.h - 11);
+        ctx.fillStyle = '#4a3340';
+        ctx.fillRect(e.x, e.y + 14, e.w, 5);
+        ctx.fillStyle = '#2b1c28';
+        ctx.fillRect(e.x + 4, e.y, e.w - 8, 11);
+        ctx.fillRect(e.x + 1, e.y + 8, e.w - 2, 3);
+
+        // Фонарь в вытянутой руке.
+        const lx = cx + e.dir * 15;
+        const ly = e.y + 24;
+        ctx.strokeStyle = '#6d5a35';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cx, e.y + 19);
+        ctx.lineTo(lx, ly);
+        ctx.stroke();
+        ctx.fillStyle = '#f2d06b';
+        ctx.beginPath();
+        ctx.arc(lx, ly + 3, 3.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#8a7440';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        ctx.fillStyle = '#f0c05a';
+        const ex = e.dir > 0 ? e.x + e.w - 9 : e.x + 5;
+        ctx.fillRect(ex, e.y + 4, 3, 2);
+      } else if (e.type === 'pendulum') {
+        // Подвес от потолка к шарниру (если задан mountY).
+        if (typeof e.mountY === 'number') {
+          ctx.strokeStyle = '#3c4353';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(e.anchorX, e.mountY);
+          ctx.lineTo(e.anchorX, e.anchorY);
+          ctx.stroke();
+          ctx.fillStyle = '#2a3040';
+          ctx.fillRect(e.anchorX - 7, e.mountY, 14, 5);
+        }
+
+        // Цепь и тяжёлый шар.
+        ctx.strokeStyle = '#4b5262';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(e.anchorX, e.anchorY);
+        ctx.lineTo(e.bobX, e.bobY);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(200, 210, 230, 0.28)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(e.anchorX - 1, e.anchorY);
+        ctx.lineTo(e.bobX - 1, e.bobY);
+        ctx.stroke();
+
+        // Крепление на балке.
+        ctx.fillStyle = '#3c4353';
+        ctx.fillRect(e.anchorX - 10, e.anchorY - 6, 20, 8);
+        ctx.fillStyle = '#5a6373';
+        ctx.fillRect(e.anchorX - 4, e.anchorY - 2, 8, 3);
+
+        // Шипы шара.
+        ctx.fillStyle = '#1c222d';
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * Math.PI * 2 + time * 0.4;
+          const x1 = e.bobX + Math.cos(a) * (e.bobR - 2);
+          const y1 = e.bobY + Math.sin(a) * (e.bobR - 2);
+          const x2 = e.bobX + Math.cos(a) * (e.bobR + 6);
+          const y2 = e.bobY + Math.sin(a) * (e.bobR + 6);
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.lineTo(x1 + 2, y1 + 2);
+          ctx.closePath();
+          ctx.fill();
+        }
+
+        ctx.fillStyle = e.color;
+        ctx.beginPath();
+        ctx.arc(e.bobX, e.bobY, e.bobR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#59627a';
+        ctx.beginPath();
+        ctx.arc(e.bobX - 4, e.bobY - 5, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#d8c89a';
+        ctx.fillRect(e.bobX - 2, e.bobY - 9, 3, 3);
       } else if (e.type === 'shooter') {
         const cx = e.x + e.w / 2;
         const cy = e.y + e.h / 2;
@@ -394,4 +589,3 @@ export class EnemyManager {
     }
   }
 }
-

@@ -3,6 +3,7 @@ import { Input } from './input.js';
 import { Brush } from './brush.js';
 import { Camera } from './camera.js';
 import { AudioEngine } from './audio.js';
+import { Laser } from './lasers.js';
 import { EnemyManager } from './enemies.js';
 import { PuzzleManager } from './puzzles.js';
 import {
@@ -14,46 +15,51 @@ import {
   PITS,
   PICTURES,
   DANGERS,
+  LASERS,
   DOOR,
   GATES,
+  PUZZLE_BRIDGES,
+  FLOOR_Y,
+  CEILINGS,
   DECOR,
 } from './level.js';
-import { clamp, rectsOverlap } from './collision.js';
+import { clamp, horizontalOverlap, rectsOverlap } from './collision.js';
 
 const BEST_KEY = 'chalk_best';
 const DIFF_KEY = 'chalk_difficulty';
 const COST_PER_CELL = 1 / 3; // 1 краска за 3 ячейки
 const TOTAL_PICTURES = PICTURES.length;
+const REWARD_PAINT = 30;
 
-// Хардкорный баланс: краски мало, регенерация медленная. Восемь мостов
-// по 230 px стоят примерно 61 краску, поэтому каждый забег — планирование.
+// Баланс из брифа: краски хватает на все мосты с запасом 20–30%.
+// Средняя сложность: 100 краски, регенерация +2/с, 3 жизни.
 export const DIFFICULTIES = Object.freeze({
   easy: {
     id: 'easy',
     label: 'Лёгкий',
-    paint: 90,
-    regen: 2.5,
+    paint: 150,
+    regen: 3,
     lives: 5,
     bonus: 5,
-    picturePaint: 14,
+    picturePaint: REWARD_PAINT,
   },
   medium: {
     id: 'medium',
     label: 'Средний',
-    paint: 50,
-    regen: 1.1,
+    paint: 100,
+    regen: 2,
     lives: 3,
     bonus: 10,
-    picturePaint: 10,
+    picturePaint: REWARD_PAINT,
   },
   hard: {
     id: 'hard',
     label: 'Сложный',
-    paint: 26,
-    regen: 0.45,
+    paint: 60,
+    regen: 1,
     lives: 1,
     bonus: 15,
-    picturePaint: 8,
+    picturePaint: REWARD_PAINT,
   },
 });
 
@@ -61,8 +67,8 @@ const CUTSCENES = Object.freeze({
   intro: [
     'Ночь. Галерея закрыта, но картины не спят.',
     'Сторож ушёл, оставив дверь на замке.',
-    'Восемь залов. Восемь полотен. Три печати.',
-    'У тебя только мел и краска. Мосты тают.',
+    'Семь залов. Семь полотен. Пять печатей и два узора.',
+    'У тебя только мел и краска. Мосты тают, потолки низки.',
     'Верни свет на стены. До рассвета.',
   ],
   outro: [
@@ -150,9 +156,19 @@ export class Game {
       onCell: (gx, gy) => this._onBrushCell(gx, gy),
       isExempt: (gx, gy) => this.puzzles.isInsideCell(gx, gy),
       onCommitCell: (gx, gy) => this._commitBrushCell(gx, gy),
+      ceilingAt: (wx) => this._ceilingAt(wx),
+      onBlocked: () => this.audio.play('bonk'),
     });
     this.camera = new Camera(VIEW.w, VIEW.h, WORLD.w, WORLD.h);
     this.audio = new AudioEngine();
+    this.lasers = LASERS.map(
+      (cfg) =>
+        new Laser({
+          ...cfg,
+          onCharge: (l) => this._onLaserPhase(l, 'charge'),
+          onFire: (l) => this._onLaserPhase(l, 'fire'),
+        })
+    );
     this.enemies = new EnemyManager();
 
     this.totalPuzzles = this.puzzles.total;
@@ -173,7 +189,11 @@ export class Game {
     this.gateFade = {};
     for (const g of GATES) this.gateFade[g.id] = 0;
 
+    this.slickDir = 0;
+    this.slickTimer = 0;
     this.hintTimer = 7;
+    this.laserHintTimer = 0;
+    this.laserHintShown = false;
     this.lastTime = 0;
     this.rafId = null;
     this.flashes = [];
@@ -197,7 +217,7 @@ export class Game {
       onPauseToggle: () => this.togglePause(),
       onDrawStart: (x, y) => this._drawStart(x, y),
       onDrawMove: (x, y) => this._drawMove(x, y),
-      onDrawEnd: () => this.brush.finishDraw(true),
+      onDrawEnd: () => this._drawEnd(),
     });
 
     this._loop = this._loop.bind(this);
@@ -339,6 +359,7 @@ export class Game {
     this.brush.reset();
     this.puzzles.reset();
     this.enemies.reset();
+    for (const l of this.lasers) l.reset();
     this.paint = this.maxPaint;
     this.hearts = this.maxLives;
     this.invuln = 0;
@@ -352,7 +373,10 @@ export class Game {
     this.hits = 0;
     this.falls = 0;
     for (const g of GATES) this.gateFade[g.id] = 0;
+    this.slickDir = 0;
+    this.slickTimer = 0;
     this.hintTimer = 7;
+    this.laserHintTimer = 0;
     this.lowPaintWarned = false;
     this.lastTime = 0;
     this.flashes.length = 0;
@@ -388,9 +412,31 @@ export class Game {
   get hallLabel() {
     const cx = this.player.x + this.player.w / 2;
     for (const h of HALLS) {
-      if (cx >= h.x0 && cx < h.x1) return h.label;
+      if (cx >= h.x0 && cx < h.x1) return `${h.label} · ${h.name}`;
     }
-    return HALLS[HALLS.length - 1].label;
+    return `${HALLS[HALLS.length - 1].label} · ${HALLS[HALLS.length - 1].name}`;
+  }
+
+  _hallAt(wx) {
+    for (const h of HALLS) {
+      if (wx >= h.x0 && wx < h.x1) return h;
+    }
+    return null;
+  }
+
+  // Потолок текущего зала — для правила «мазок не выше потолка».
+  _ceilingAt(wx) {
+    const h = this._hallAt(wx);
+    return h ? h.ceilingY : -Infinity;
+  }
+
+  _activeCeilings() {
+    return CEILINGS.map((c) => ({
+      x: c.x,
+      y: c.y,
+      w: c.w,
+      h: c.h,
+    }));
   }
 
   // ---------- ввод ----------
@@ -408,7 +454,10 @@ export class Game {
       return false;
     }
     const ok = this.brush.begin(wx, wy);
-    if (ok) this.audio.play('paint');
+    if (ok) {
+      this.puzzles.beginStroke();
+      this.audio.play('paint');
+    }
     return ok;
   }
 
@@ -420,6 +469,27 @@ export class Game {
       return false;
     }
     return true;
+  }
+
+  // Отпускание указателя: мазок становится твёрдым, затем проверяются
+  // пазлы «соедини» — шипы, число точек и непрерывность линии.
+  _drawEnd() {
+    const wasDrawing = this.brush.isDrawing;
+    this.brush.finishDraw(true);
+    if (!wasDrawing) return;
+
+    for (const ev of this.puzzles.endStroke()) {
+      if (ev.type === 'hit') {
+        this.audio.play('hit');
+        this._toast('Шипы! Мазок сброшен — начни заново');
+      } else if (ev.type === 'solved') {
+        this._onPuzzleSolved(ev.puzzle);
+      } else if (ev.type === 'progress') {
+        this.audio.play('ui');
+        const n = ev.puzzle.buttons.length;
+        this._toast(`Соедини: ${ev.touched}/${n} точки`);
+      }
+    }
   }
 
   _onBrushCell(gx, gy) {
@@ -435,16 +505,21 @@ export class Game {
 
   _commitBrushCell(gx, gy) {
     const res = this.puzzles.paintCell(gx, gy);
-    if (!res.counted) return;
-    if (res.solved) {
-      this.puzzlesSolved = this.puzzles.solvedCount();
-      this.score += 2;
-      const c = this.puzzles.centerOf(res.puzzle);
-      this.flashes.push({ x: c.x, y: c.y, t: 0.55, max: 0.55, hue: 120 });
-      this.audio.play('puzzle');
-      this.audio.play('gate');
-      this._toast(`${res.puzzle.name}: печать снята — проход открыт`);
-    }
+    if (res.solved) this._onPuzzleSolved(res.puzzle);
+  }
+
+  _onPuzzleSolved(p) {
+    this.puzzlesSolved = this.puzzles.solvedCount();
+    this.score += 2;
+    this.paint = Math.min(this.maxPaint, this.paint + this.picturePaint);
+    const c = this.puzzles.centerOf(p);
+    this.flashes.push({ x: c.x, y: c.y, t: 0.55, max: 0.55, hue: 120 });
+    this.audio.play('puzzle');
+    this.audio.play('gate');
+    const where = p.kind === 'connect' ? 'мост открыт' : 'печать снята — проход открыт';
+    this._toast(
+      `${p.name}: +${this.picturePaint} краски — ${where}`
+    );
   }
 
   _atPuzzle(wx, wy) {
@@ -512,7 +587,9 @@ export class Game {
     this.runTime += dt;
     this.hintTimer = Math.max(0, this.hintTimer - dt);
     this.brush.update(dt);
+    this.puzzles.update(dt);
     if (this.invuln > 0) this.invuln = Math.max(0, this.invuln - dt);
+    for (const l of this.lasers) l.update(dt);
 
     const near = {
       x: this.player.x - 72,
@@ -521,11 +598,32 @@ export class Game {
       h: this.player.h + 144,
     };
     const solids = PLATFORMS.slice();
-    const gates = this._activeGates();
-    solids.push(...gates);
+    solids.push(...this._activeCeilings());
+    solids.push(...this._activeGates());
+    solids.push(...this._activeBridges());
     solids.push(...this.brush.solidsNear(near));
 
-    this.player.update(dt, solids, this.input.keys);
+    // Скользкий пол: после отпускания клавиш художник ещё скользит.
+    let keys = this.input.keys;
+    const onSlick = this._onSlick();
+    if (onSlick) {
+      const dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+      if (dir !== 0) {
+        this.slickDir = dir;
+        this.slickTimer = 0.42;
+      } else if (this.slickTimer > 0) {
+        this.slickTimer = Math.max(0, this.slickTimer - dt);
+        keys = Object.assign({}, keys, {
+          left: this.slickDir < 0,
+          right: this.slickDir > 0,
+        });
+      }
+    } else {
+      this.slickDir = 0;
+      this.slickTimer = 0;
+    }
+
+    this.player.update(dt, solids, keys);
     this.input.keys.jumpPressed = false;
 
     if (this.player.x < 0) {
@@ -536,8 +634,19 @@ export class Game {
       this.player.vx = 0;
     }
 
+    // Подсказка о цикле лазера — один раз за сессию, при первом
+    // приближении к любому лучу.
+    if (this.laserHintTimer > 0) {
+      this.laserHintTimer = Math.max(0, this.laserHintTimer - dt);
+    }
+    if (!this.laserHintShown && this._laserNear(150)) {
+      this.laserHintShown = true;
+      this.laserHintTimer = 4;
+    }
+
     if (this.player.justJumped) this.audio.play('jump');
     if (this.player.justLanded) this.audio.play('land');
+    if (this.player.justBonked) this.audio.play('bonk');
 
     // Регенерация только на статичной платформе, не на меловом мосту.
     if (this.player.onGround && this._onStaticPlatform() && this.invuln <= 0) {
@@ -569,7 +678,7 @@ export class Game {
         });
         this.audio.play('collect');
         this._toast(
-          `Полотно возвращено: ${this.picturesCollected} / ${TOTAL_PICTURES}`
+          `Полотно возвращено: ${this.picturesCollected} / ${TOTAL_PICTURES} (+${this.picturePaint} краски)`
         );
       }
     }
@@ -589,17 +698,37 @@ export class Game {
     const hitEnemy = this.enemies.checkHit(this.player);
     if (hitEnemy) this._damage('enemy', hitEnemy);
 
-    // Опасные зоны.
+    // Опасные зоны: лужи и шипы. Скользкий пол не отнимает жизнь.
     for (const d of DANGERS) {
+      if (d.type === 'slick') continue;
       if (rectsOverlap(this.player, d)) {
         this._damage('danger');
         break;
       }
     }
 
-    // Падение в бездну.
+    // Лазер наносит урон только в фазе «выстрел». В нагрев и паузу
+    // пересечение с лучом безопасно. Враги луч не замечают.
+    for (const l of this.lasers) {
+      if (!l.isActive()) continue;
+      if (rectsOverlap(this.player, l.rect)) {
+        this._damage('laser', l);
+        break;
+      }
+    }
+
+    // Падение в бездну: возврат на чекпоинт. Если неуязвимость ещё
+    // активна, просто возвращаем без потери жизни и без «зависания»
+    // в пустоте за пределами мира.
     if (this.player.y > WORLD.h + 80) {
-      this._damage('fall');
+      if (this.invuln > 0) {
+        this.player.x = this.checkpoint.x;
+        this.player.y = this.checkpoint.y;
+        this.player.vx = 0;
+        this.player.vy = 0;
+      } else {
+        this._damage('fall');
+      }
     }
 
     if (this._doorOpen() && rectsOverlap(this.player, DOOR)) {
@@ -618,6 +747,49 @@ export class Game {
       }
     }
     return out;
+  }
+
+  // Мосты, открытые пазлами «соедини мазком».
+  _activeBridges() {
+    const out = [];
+    for (const b of PUZZLE_BRIDGES) {
+      if (this.puzzles.isSolvedBridge(b.id)) {
+        out.push({ x: b.x, y: b.y, w: b.w, h: b.h });
+      }
+    }
+    return out;
+  }
+
+  // Первый лазер в радиусе подсказки (по ближайшей точке луча).
+  _laserNear(radius) {
+    const px = this.player.x + this.player.w / 2;
+    const py = this.player.y + this.player.h / 2;
+    for (const l of this.lasers) {
+      const nx = Math.max(l.x, Math.min(px, l.x + l.w));
+      const ny = Math.max(l.y, Math.min(py, l.y + l.h));
+      if (Math.hypot(px - nx, py - ny) <= radius) return l;
+    }
+    return null;
+  }
+
+  // Звук фаз лазера слышен только в текущем зале, чтобы далёкие
+  // залы не заглушали сцену. Mute обрабатывает AudioEngine.
+  _onLaserPhase(l, phase) {
+    if (this.state !== 'playing') return;
+    const here = this._hallAt(this.player.x + this.player.w / 2);
+    const there = this._hallAt(l.cx);
+    if (here && there && here.id !== there.id) return;
+    this.audio.play(phase === 'charge' ? 'laser_charge' : 'laser_fire');
+  }
+
+  _onSlick() {
+    const feet = this.player.y + this.player.h;
+    if (Math.abs(feet - FLOOR_Y) > 2) return false;
+    for (const d of DANGERS) {
+      if (d.type !== 'slick') continue;
+      if (horizontalOverlap(this.player, d)) return true;
+    }
+    return false;
   }
 
   _doorOpen() {
@@ -664,7 +836,7 @@ export class Game {
     this.hits += 1;
     this.invuln = 1;
     this.hurtFlash = 1;
-    this.audio.play('hit');
+    this.audio.play(kind === 'laser' ? 'laser_hit' : 'hit');
 
     if (this.hearts <= 0) {
       this.hearts = 0;
@@ -673,16 +845,25 @@ export class Game {
     }
 
     if (kind === 'enemy') {
-      const ecx = source
-        ? source.x + (source.w !== undefined ? source.w / 2 : 0)
-        : this.player.x + this.player.w / 2;
+      let ecx = this.player.x + this.player.w / 2;
+      if (source) {
+        if (source.type === 'pendulum') ecx = source.bobX;
+        else if (typeof source.x === 'number') {
+          ecx = source.x + (source.w || 0) / 2;
+        }
+      }
       const dir = this.player.x + this.player.w / 2 >= ecx ? 1 : -1;
       this.player.x += dir * 16;
       this.player.vy = -300;
       this.player.onGround = false;
       this._toast('Осторожно — экспонат живой');
+    } else if (kind === 'laser') {
+      // Секунда неуязвимости уже выставлена выше. Не отбрасываем
+      // игрока в бездну — только коротко предупреждаем.
+      this._toast('Лазер! Дождись паузы');
     } else if (kind === 'projectile') {
-      const dir = source && source.x > this.player.x + this.player.w / 2 ? -1 : 1;
+      const dir =
+        source && source.x > this.player.x + this.player.w / 2 ? -1 : 1;
       this.player.x += dir * 10;
       this.player.vy = -260;
       this.player.onGround = false;
@@ -770,13 +951,16 @@ export class Game {
     ctx.translate(-this.camera.x, -this.camera.y);
 
     this._drawGallery(ctx, time);
+    this._drawCeilings(ctx);
     this._drawPits(ctx);
     this._drawPlatforms(ctx);
+    this._drawBridges(ctx);
     this._drawGates(ctx, time);
     this._drawDoor(ctx, time);
     this._drawPictures(ctx, time);
-    this._drawDangers(ctx);
+    this._drawDangers(ctx, time);
     this._drawBrush(ctx, time);
+    this._drawLasers(ctx);
 
     const hidden = new Set();
     for (const g of GATES) {
@@ -800,6 +984,7 @@ export class Game {
       this._drawHUD(ctx);
     }
     if (this.state === 'playing' && this.hintTimer > 0) this._drawHint(ctx);
+    if (this.state === 'playing' && this.laserHintTimer > 0) this._drawLaserHint(ctx);
     this._drawToasts(ctx);
     this._drawHurt(ctx);
     this._drawOverlay(ctx);
@@ -814,13 +999,13 @@ export class Game {
   _drawGallery(ctx, time) {
     // Стена и пол галереи.
     ctx.fillStyle = '#171b26';
-    ctx.fillRect(0, 0, WORLD.w, 1120);
+    ctx.fillRect(0, 0, WORLD.w, FLOOR_Y);
     ctx.fillStyle = '#141822';
     ctx.fillRect(0, 0, WORLD.w, 470);
     ctx.fillStyle = '#1b1f2a';
-    ctx.fillRect(0, 1020, WORLD.w, 100);
+    ctx.fillRect(0, FLOOR_Y - 96, WORLD.w, 96);
     ctx.fillStyle = '#2a3040';
-    ctx.fillRect(0, 1020, WORLD.w, 2);
+    ctx.fillRect(0, FLOOR_Y - 2, WORLD.w, 2);
 
     // Потолочный карниз.
     ctx.fillStyle = '#1d2231';
@@ -836,30 +1021,22 @@ export class Game {
     ctx.beginPath();
     for (let x = 0; x <= WORLD.w; x += 240) {
       ctx.moveTo(Math.round(x) + 0.5, 42);
-      ctx.lineTo(Math.round(x) + 0.5, 1120);
+      ctx.lineTo(Math.round(x) + 0.5, FLOOR_Y);
     }
     ctx.stroke();
 
     // Пилястры на границах залов.
     for (const x of DECOR.pilasters) {
       ctx.fillStyle = '#1c2130';
-      ctx.fillRect(x - 13, 42, 26, 1078);
+      ctx.fillRect(x - 13, 42, 26, FLOOR_Y - 42);
       ctx.fillStyle = '#232a3a';
       ctx.fillRect(x - 18, 42, 36, 9);
-      ctx.fillRect(x - 18, 1080, 36, 12);
+      ctx.fillRect(x - 18, FLOOR_Y - 36, 36, 12);
       ctx.fillStyle = 'rgba(200, 170, 90, 0.18)';
-      ctx.fillRect(x - 13, 51, 2, 1029);
+      ctx.fillRect(x - 13, 51, 2, FLOOR_Y - 87);
     }
 
-    // Названия залов.
-    ctx.textAlign = 'center';
-    ctx.font = '600 13px Georgia, serif';
-    for (const hall of HALLS) {
-      ctx.fillStyle = 'rgba(210, 180, 110, 0.38)';
-      ctx.fillText(hall.label, hall.center, 66);
-      ctx.fillStyle = 'rgba(210, 180, 110, 0.18)';
-      ctx.fillRect(hall.center - 30, 74, 60, 1);
-    }
+    // Названия залов рисуются вместе с потолками (см. _drawCeilings).
 
     // Окна: плоское ночное небо и луна из 2–3 кругов.
     for (const w of DECOR.windows) {
@@ -944,41 +1121,77 @@ export class Game {
       }
     }
 
-    // Плоские настенные лампы.
+    // Плоские лампы под потолком каждого зала.
     for (const x of DECOR.lamps) {
+      const hall = this._hallAt(x);
+      const ceil = hall ? hall.ceilingY : 42;
       ctx.strokeStyle = '#4a3d26';
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.moveTo(x, 42);
-      ctx.lineTo(x, 70);
+      ctx.moveTo(x, ceil);
+      ctx.lineTo(x, ceil + 28);
       ctx.stroke();
       ctx.fillStyle = '#2a3040';
       ctx.beginPath();
-      ctx.moveTo(x - 9, 78);
-      ctx.lineTo(x + 9, 78);
-      ctx.lineTo(x + 5, 68);
-      ctx.lineTo(x - 5, 68);
+      ctx.moveTo(x - 9, ceil + 36);
+      ctx.lineTo(x + 9, ceil + 36);
+      ctx.lineTo(x + 5, ceil + 26);
+      ctx.lineTo(x - 5, ceil + 26);
       ctx.closePath();
       ctx.fill();
       ctx.fillStyle = '#e6d8a8';
-      ctx.fillRect(x - 4, 74, 8, 4);
+      ctx.fillRect(x - 4, ceil + 32, 8, 4);
     }
+  }
+
+  // Потолки залов: тёмная полоса с золотой кромкой снизу.
+  _drawCeilings(ctx) {
+    for (const hall of HALLS) {
+      const y = hall.ceilingY;
+      ctx.fillStyle = '#1d2231';
+      ctx.fillRect(hall.x0, y - 58, hall.x1 - hall.x0, 58);
+      ctx.fillStyle = '#232838';
+      ctx.fillRect(hall.x0, y - 22, hall.x1 - hall.x0, 4);
+      ctx.fillStyle = '#0f121a';
+      ctx.fillRect(hall.x0, y - 9, hall.x1 - hall.x0, 9);
+
+      // Лепнина: повторяющиеся плоские прямоугольники.
+      ctx.fillStyle = '#2a3040';
+      for (let x = hall.x0 + 30; x < hall.x1 - 20; x += 58) {
+        ctx.fillRect(x, y - 16, 20, 5);
+      }
+
+      // Золотая кромка снизу — два неточных сегмента.
+      ctx.fillStyle = '#c8aa5a';
+      ctx.fillRect(hall.x0, y - 2, hall.x1 - hall.x0, 2);
+      ctx.fillStyle = 'rgba(255, 230, 160, 0.35)';
+      ctx.fillRect(hall.x0, y - 3, hall.x1 - hall.x0, 1);
+
+      // Название зала на тёмной полосе потолка.
+      ctx.textAlign = 'center';
+      ctx.font = '600 13px Georgia, serif';
+      ctx.fillStyle = 'rgba(210, 180, 110, 0.72)';
+      ctx.fillText(hall.label, hall.center, y - 20);
+      ctx.fillStyle = 'rgba(210, 180, 110, 0.22)';
+      ctx.fillRect(hall.center - 30, y - 13, 60, 1);
+    }
+    ctx.textAlign = 'left';
   }
 
   _drawPits(ctx) {
     for (const pit of PITS) {
       ctx.fillStyle = '#05070c';
-      ctx.fillRect(pit.x, 1120, pit.w, WORLD.h - 1120);
+      ctx.fillRect(pit.x, FLOOR_Y, pit.w, WORLD.h - FLOOR_Y);
       ctx.fillStyle = '#080b12';
-      ctx.fillRect(pit.x, 1120, pit.w, 12);
+      ctx.fillRect(pit.x, FLOOR_Y, pit.w, 12);
       ctx.fillStyle = '#2a3040';
-      ctx.fillRect(pit.x, 1120, pit.w, 2);
+      ctx.fillRect(pit.x, FLOOR_Y, pit.w, 2);
       ctx.strokeStyle = 'rgba(120, 140, 190, 0.07)';
       ctx.lineWidth = 1;
       ctx.beginPath();
       for (let i = 1; i <= 3; i++) {
         const x = pit.x + (pit.w * i) / 4;
-        ctx.moveTo(Math.round(x) + 0.5, 1128);
+        ctx.moveTo(Math.round(x) + 0.5, FLOOR_Y + 12);
         ctx.lineTo(Math.round(x) + 0.5, WORLD.h);
       }
       ctx.stroke();
@@ -1101,9 +1314,48 @@ export class Game {
     }
   }
 
+  // Постоянные мосты, которые открывают пазлы «соедини мазком».
+  _drawBridges(ctx) {
+    for (const b of PUZZLE_BRIDGES) {
+      if (!this.puzzles.isSolvedBridge(b.id)) continue;
+
+      // Настил из светлых досок.
+      ctx.fillStyle = '#3a2f22';
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.fillStyle = '#4a3c2a';
+      for (let x = b.x + 4; x < b.x + b.w - 4; x += 22) {
+        ctx.fillRect(x, b.y + 2, 16, b.h - 5);
+      }
+      ctx.fillStyle = '#2b241b';
+      ctx.fillRect(b.x, b.y + b.h - 3, b.w, 3);
+
+      // Опоры по краям.
+      ctx.fillStyle = '#232835';
+      ctx.fillRect(b.x - 2, b.y - 12, 6, b.h + 12);
+      ctx.fillRect(b.x + b.w - 4, b.y - 12, 6, b.h + 12);
+      ctx.fillStyle = '#c8aa5a';
+      ctx.fillRect(b.x - 2, b.y - 13, 6, 3);
+      ctx.fillRect(b.x + b.w - 4, b.y - 13, 6, 3);
+
+      // Меловая кромка — знак, что мост нарисован.
+      ctx.strokeStyle = 'rgba(240, 234, 216, 0.55)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(b.x + 3, b.y + 1.5);
+      ctx.lineTo(b.x + b.w - 3, b.y + 1.5);
+      ctx.stroke();
+
+      ctx.save();
+      ctx.font = '600 10px "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(232, 207, 136, 0.7)';
+      ctx.fillText(b.label, b.x + b.w / 2, b.y - 20);
+      ctx.restore();
+    }
+  }
+
   _drawGates(ctx) {
-    for (const g of GATES) {
-      const fade = this.gateFade[g.id] || 0;
+    for (const g of GATES) {      const fade = this.gateFade[g.id] || 0;
       const alpha = 1 - fade;
       if (alpha <= 0.02) continue;
       const rand = mulberry32(g.x * 17 + 3);
@@ -1157,10 +1409,12 @@ export class Game {
       ctx.fillText(g.roman, g.x + g.w / 2, g.y + 150);
 
       // Углублённая панель под пазл.
-      const pw = Math.min(170, g.w - 24);
+      const pz = this.puzzles.get(g.puzzle);
+      const ph = Math.min(170, g.h - 24);
+      const pw = Math.min(170, g.w - 16);
       const px = g.x + g.w / 2 - pw / 2;
-      const py = 620;
-      const ph = 210;
+      let py = (pz ? this.puzzles.topOf(pz) : g.y + 40) - 18;
+      py = Math.max(g.y + 8, Math.min(py, g.y + g.h - ph - 8));
       ctx.fillStyle = '#121620';
       ctx.fillRect(px, py, pw, ph);
       ctx.strokeStyle = '#6d5423';
@@ -1294,8 +1548,26 @@ export class Game {
     }
   }
 
-  _drawDangers(ctx) {
+  _drawLasers(ctx) {
+    for (const l of this.lasers) l.render(ctx);
+  }
+
+  _drawDangers(ctx, time) {
     for (const d of DANGERS) {
+      if (d.type === 'slick') {
+        // Скользкий пол: маслянистая полоса и блики.
+        ctx.fillStyle = 'rgba(36, 54, 68, 0.9)';
+        ctx.fillRect(d.x, d.y - 2, d.w, 4);
+        ctx.fillStyle = 'rgba(140, 200, 225, 0.28)';
+        ctx.fillRect(d.x + 4, d.y - 1, d.w - 8, 1.5);
+        ctx.fillStyle = 'rgba(220, 240, 250, 0.4)';
+        for (let i = 0; i < 4; i++) {
+          const x = d.x + 10 + ((i * 23 + 7) % Math.max(1, d.w - 20));
+          ctx.fillRect(x, d.y + (i % 2), 7, 1);
+        }
+        continue;
+      }
+
       if (d.type === 'puddle') {
         const cx = d.x + d.w / 2;
         const cy = d.y + d.h / 2;
@@ -1306,6 +1578,31 @@ export class Game {
         ctx.fillStyle = 'rgba(232, 190, 190, 0.5)';
         ctx.fillRect(cx - d.w * 0.22, cy - 2, 12, 2);
         ctx.fillRect(cx + d.w * 0.08, cy + 1, 8, 2);
+      } else if (d.ceil) {
+        // Шипы на потолке — остриём вниз.
+        const count = Math.min(6, Math.max(3, Math.round(d.w / 12)));
+        const tw = d.w / count;
+        const rand = mulberry32(d.x * 13 + 3);
+        ctx.fillStyle = '#22262f';
+        ctx.fillRect(d.x, d.y, d.w, 4);
+        for (let i = 0; i < count; i++) {
+          const sx = d.x + i * tw;
+          const h = d.h * (0.55 + rand() * 0.45);
+          ctx.fillStyle = '#8d94a1';
+          ctx.beginPath();
+          ctx.moveTo(sx + 1, d.y + 3);
+          ctx.lineTo(sx + tw / 2, d.y + 3 + h);
+          ctx.lineTo(sx + tw - 1, d.y + 3);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = '#c3c9d4';
+          ctx.beginPath();
+          ctx.moveTo(sx + tw / 2, d.y + 3 + h);
+          ctx.lineTo(sx + tw / 2 - 1.5, d.y + 3 + h * 0.45);
+          ctx.lineTo(sx + tw / 2 + 1.5, d.y + 3 + h * 0.45);
+          ctx.closePath();
+          ctx.fill();
+        }
       } else {
         const count = Math.min(5, Math.max(3, Math.round(d.w / 10)));
         const tw = d.w / count;
@@ -1335,6 +1632,16 @@ export class Game {
   }
 
   _drawBrush(ctx, time) {
+    ctx.save();
+    // Упор в потолок: короткое дрожание всего свежего мазка.
+    if (this.brush.blockedFlash > 0) {
+      const k = this.brush.blockedFlash / 0.18;
+      ctx.translate(
+        Math.sin(time * 95) * 2.6 * k,
+        Math.cos(time * 128) * 1.6 * k
+      );
+    }
+
     this.brush.forEachVisible(
       this.camera.x - 12,
       this.camera.y - 12,
@@ -1374,6 +1681,8 @@ export class Game {
         ctx.globalAlpha = 1;
       }
     );
+
+    ctx.restore();
   }
 
   _drawFlashes(ctx) {
@@ -1609,13 +1918,56 @@ export class Game {
     ctx.textAlign = 'left';
     ctx.font = '15px "Segoe UI", sans-serif';
     ctx.fillStyle = '#efe6cf';
-    ctx.fillText('Зажми ЛКМ/тап — рисуй кисточкой.', x + 56, y + 28);
+    ctx.fillText('Зажми ЛКМ/тап — рисуй кисточкой. Выше потолка мел не держится.', x + 56, y + 28);
     ctx.font = '13px "Segoe UI", sans-serif';
     ctx.fillStyle = 'rgba(202, 192, 166, 0.82)';
     ctx.fillText(
-      'Мосты тают, контуры печатей — нет. Восемь залов, три печати, одна дверь.',
+      'Мосты тают, контуры печатей — нет. Семь залов, пять печатей, два узора.',
       x + 56,
       y + 49
+    );
+    ctx.restore();
+  }
+
+  _drawLaserHint(ctx) {
+    const alpha = this.laserHintTimer < 0.6 ? this.laserHintTimer / 0.6 : 1;
+    const w = 660;
+    const h = 46;
+    const x = (VIEW.w - w) / 2;
+    const y = VIEW.h - 92;
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, alpha);
+
+    ctx.fillStyle = 'rgba(9, 12, 19, 0.88)';
+    roundRect(ctx, x, y, w, h, 7);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 80, 80, 0.34)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Маленькая схема луча: две линзы и красное ядро.
+    const iy = y + h / 2;
+    ctx.fillStyle = '#ff2a2a';
+    ctx.fillRect(x + 26, iy - 3, 42, 6);
+    ctx.fillStyle = '#11151f';
+    ctx.beginPath();
+    ctx.arc(x + 24, iy, 6, 0, Math.PI * 2);
+    ctx.arc(x + 70, iy, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ff5a5a';
+    ctx.beginPath();
+    ctx.arc(x + 24, iy, 4, 0, Math.PI * 2);
+    ctx.arc(x + 70, iy, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.textAlign = 'left';
+    ctx.font = '14px "Segoe UI", sans-serif';
+    ctx.fillStyle = '#f2e4e0';
+    ctx.fillText(
+      'Лазер: нагрев → выстрел → пауза. Проходи в паузе.',
+      x + 90,
+      iy + 5
     );
     ctx.restore();
   }

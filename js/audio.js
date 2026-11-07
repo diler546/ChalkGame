@@ -94,6 +94,18 @@ export class AudioEngine {
         case 'land':
           this._tone({ type: 'square', from: 120, dur: 0.08, vol: 0.14 });
           break;
+        case 'bonk':
+          this._tone({ type: 'square', from: 180, dur: 0.05, vol: 0.08 });
+          break;
+        case 'laser_charge':
+          this._tone({ type: 'sawtooth', from: 200, to: 400, dur: 0.8, vol: 0.08 });
+          break;
+        case 'laser_fire':
+          this._tone({ type: 'square', from: 800, dur: 0.1, vol: 0.15 });
+          break;
+        case 'laser_hit':
+          this._tone({ type: 'square', from: 150, dur: 0.2, vol: 0.24 });
+          break;
         case 'paint': {
           const now = performance.now();
           if (now - this.lastPaint < 60) return;

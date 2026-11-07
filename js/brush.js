@@ -19,6 +19,12 @@ export class Brush {
     this.isExempt = opts.isExempt || (() => false);
     // (gx, gy) => void — мазок завершён: ячейка засчитывается (прогресс пазла).
     this.onCommitCell = opts.onCommitCell || null;
+    // (wx) => number — высота потолка текущего зала (мировая координата Y).
+    this.ceilingAt = opts.ceilingAt || null;
+    // () => void — мазок упёрся в потолок (короткий звук + дрожание).
+    this.onBlocked = opts.onBlocked || null;
+    this.blockedFlash = 0;
+    this.lastBonk = -1e9;
     this.counted = 0; // сколько ячеек учитывается в лимите
   }
 
@@ -26,6 +32,7 @@ export class Brush {
     this.cells.clear();
     this.active = null;
     this.counted = 0;
+    this.blockedFlash = 0;
   }
 
   get isDrawing() {
@@ -103,6 +110,21 @@ export class Brush {
     }
 
     // Спрашиваем разрешение на трату краски.
+    if (this.ceilingAt) {
+      const ceilingY = this.ceilingAt((gx + 0.5) * CELL);
+      if (Number.isFinite(ceilingY) && gy * CELL < ceilingY - CELL) {
+        // Выше потолка ячейку не создаём, но мазок не обрываем:
+        // игрок видит упор и может продолжить ниже.
+        this.blockedFlash = 0.18;
+        const now = performance.now();
+        if (this.onBlocked && now - this.lastBonk > 110) {
+          this.lastBonk = now;
+          this.onBlocked(gx, gy);
+        }
+        return true;
+      }
+    }
+
     if (this.onCell && !this.onCell(gx, gy)) return false;
 
     // Ячейки пазлов не входят в лимит 220 мазков.
@@ -165,6 +187,7 @@ export class Brush {
   }
 
   update(dt) {
+    this.blockedFlash = Math.max(0, this.blockedFlash - dt);
     for (const [key, cell] of this.cells) {
       if (cell.frozen) continue;
       cell.ttl -= dt;
